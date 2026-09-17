@@ -491,19 +491,75 @@ func TestOpenAIChatCompletions_StreamingCapturesToolCallExtraContent(t *testing.
 
 // TestOpenAIChatCompletions_EnrichesErrorWithResponseBody verifies that
 // provider 4xx validation errors with custom response bodies surface the
-// underlying message rather than failing with an empty body (#1357).
+// underlying message rather than failing with an empty body (#1357, #1042).
+// Specifically tests both object and array-wrapped error bodies returned by
+// Google Gemini endpoints.
 func TestOpenAIChatCompletions_EnrichesErrorWithResponseBody(t *testing.T) {
+	t.Run("object error body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":{"code":400,"message":"Invalid argument: thought_signature is missing","status":"INVALID_ARGUMENT"}}`))
+		}))
+		defer server.Close()
+
+		client := NewOpenAIClient(ClientConfig{
+			URL:    server.URL + "/v1",
+			APIKey: "test-key",
+			Model:  "google/gemini-3.8-flash",
+		})
+
+		_, err := client.CompletionsWithCtx(context.Background(), ChatRequest{
+			Messages: []Message{{Role: "user", Content: "hi"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Invalid argument: thought_signature is missing") {
+			t.Errorf("error = %q, want containing underlying response body message", err.Error())
+		}
+	})
+
+	t.Run("gemini array-wrapped error body #1042", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`[{"error":{"code":400,"message":"Function call is missing a thought_signature in functionCall parts","status":"INVALID_ARGUMENT"}}]`))
+		}))
+		defer server.Close()
+
+		client := NewOpenAIClient(ClientConfig{
+			URL:    server.URL + "/v1",
+			APIKey: "test-key",
+			Model:  "gemini-3.7-flash",
+		})
+
+		_, err := client.CompletionsWithCtx(context.Background(), ChatRequest{
+			Messages: []Message{{Role: "user", Content: "hi"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Function call is missing a thought_signature in functionCall parts") {
+			t.Errorf("error = %q, want containing underlying response body message", err.Error())
+		}
+	})
+}
+
+// TestOpenAIResponsesClient_EnrichesErrorWithResponseBody verifies that the
+// OpenAI Responses API client also surfaces provider error bodies on failure.
+func TestOpenAIResponsesClient_EnrichesErrorWithResponseBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error":{"code":400,"message":"Invalid argument: thought_signature is missing","status":"INVALID_ARGUMENT"}}`))
+		w.Write([]byte(`[{"error":{"code":400,"message":"responses request rejected by gateway","status":"INVALID_ARGUMENT"}}]`))
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient(ClientConfig{
+	client := NewOpenAIResponsesClient(ClientConfig{
 		URL:    server.URL + "/v1",
 		APIKey: "test-key",
-		Model:  "google/gemini-3.8-flash",
+		Model:  "custom-model",
 	})
 
 	_, err := client.CompletionsWithCtx(context.Background(), ChatRequest{
@@ -512,7 +568,7 @@ func TestOpenAIChatCompletions_EnrichesErrorWithResponseBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "Invalid argument: thought_signature is missing") {
+	if !strings.Contains(err.Error(), "responses request rejected by gateway") {
 		t.Errorf("error = %q, want containing underlying response body message", err.Error())
 	}
 }

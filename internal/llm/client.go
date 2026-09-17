@@ -1004,9 +1004,21 @@ func toolCallExtraContent(raw string) json.RawMessage {
 	return json.RawMessage(trimmed)
 }
 
+const maxErrorBodyBytes = 64 * 1024
+
+// limitErrorBodyForLog bounds the payload included in terminal and session logs
+// without truncating the HTTP response before the SDK parses it.
+func limitErrorBodyForLog(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) <= maxErrorBodyBytes {
+		return raw
+	}
+	return strings.ToValidUTF8(raw[:maxErrorBodyBytes], "\uFFFD") + "... (truncated)"
+}
+
 // formatOpenAIError enriches an OpenAI API error with the provider response body
 // when the SDK was unable to parse it (e.g. non-standard 4xx error payloads from
-// gateways such as Vertex AI #1357), avoiding opaque "400 Bad Request" errors.
+// gateways such as Vertex AI / Google Gemini #1357, #1042), avoiding opaque "400 Bad Request" errors.
 func formatOpenAIError(err error) error {
 	if err == nil {
 		return nil
@@ -1017,11 +1029,12 @@ func formatOpenAIError(err error) error {
 	}
 	if apiErr.Response != nil && apiErr.Response.Body != nil {
 		bodyBytes, readErr := io.ReadAll(apiErr.Response.Body)
+		_ = apiErr.Response.Body.Close()
 		if readErr == nil && len(bodyBytes) > 0 {
 			apiErr.Response.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			trimmed := bytes.TrimSpace(bodyBytes)
 			if len(trimmed) > 0 && !strings.Contains(apiErr.Error(), string(trimmed)) {
-				return fmt.Errorf("%w: %s", err, string(trimmed))
+				return fmt.Errorf("%w: %s", err, limitErrorBodyForLog(string(trimmed)))
 			}
 		}
 	}
